@@ -1,3 +1,8 @@
+var FBState = {
+    isFBPlatform: false,
+    initialized: false
+};
+
 (function () {
     var CANVAS_ID = 'application-canvas';
 
@@ -10,7 +15,9 @@
         // canvas.style.visibility = 'hidden';
 
         // Disable I-bar cursor on click+drag
-        canvas.onselectstart = function () { return false; };
+        canvas.onselectstart = function () {
+            return false;
+        };
 
         document.body.appendChild(canvas);
 
@@ -18,7 +25,7 @@
     };
 
     var createInputDevices = function (canvas) {
-        var devices = {
+        return {
             elementInput: new pc.ElementInput(canvas, {
                 useMouse: INPUT_SETTINGS.useMouse,
                 useTouch: INPUT_SETTINGS.useTouch
@@ -28,8 +35,6 @@
             gamepads: INPUT_SETTINGS.useGamepads ? new pc.GamePads() : null,
             touch: INPUT_SETTINGS.useTouch && pc.platform.touch ? new pc.TouchDevice(canvas) : null
         };
-
-        return devices;
     };
 
     var configureCss = function (fillMode, width, height) {
@@ -39,7 +44,7 @@
         }
 
         // css media query for aspect ratio changes
-        var css  = "@media screen and (min-aspect-ratio: " + width + "/" + height + ") {";
+        var css = "@media screen and (min-aspect-ratio: " + width + "/" + height + ") {";
         css += "    #application-canvas.fill-mode-KEEP_ASPECT {";
         css += "        width: auto;";
         css += "        height: 100%;";
@@ -72,7 +77,7 @@
     var displayError = function (html) {
         var div = document.createElement('div');
 
-        div.innerHTML  = [
+        div.innerHTML = [
             '<table style="background-color: #8CE; width: 100%; height: 100%;">',
             '  <tr>',
             '      <td align="center">',
@@ -90,8 +95,8 @@
     canvas = createCanvas();
     devices = createInputDevices(canvas);
 
-    try {
-        app = new pc.Application(canvas, {
+    function createApp() {
+        return new pc.Application(canvas, {
             elementInput: devices.elementInput,
             keyboard: devices.keyboard,
             mouse: devices.mouse,
@@ -101,14 +106,32 @@
             assetPrefix: window.ASSET_PREFIX || "",
             scriptPrefix: window.SCRIPT_PREFIX || "",
             scriptsOrder: window.SCRIPTS || []
-        });
+        })
+    }
+
+    function tryInitFb() {
+        FBState.isFBPlatform = "FBInstant" in window;
+
+        if (FBState.isFBPlatform) {
+            FBInstant.initializeAsync().then(function () {
+                FBState.initialized = true;
+                app.fire("fb:initialized");
+            }).catch(function (e) {
+                console.error("initializeAsync failed: " + e.message);
+            });
+        }
+    }
+
+    try {
+        app = createApp();
+        tryInitFb();
     } catch (e) {
         if (e instanceof pc.UnsupportedBrowserError) {
             displayError('This page requires a browser that supports WebGL.<br/>' +
-                    '<a href="http://get.webgl.org">Click here to find out more.</a>');
+                '<a href="http://get.webgl.org">Click here to find out more.</a>');
         } else if (e instanceof pc.ContextCreationError) {
             displayError("It doesn't appear your computer can support WebGL.<br/>" +
-                    '<a href="http://get.webgl.org/troubleshooting/">Click here for more information.</a>');
+                '<a href="http://get.webgl.org/troubleshooting/">Click here for more information.</a>');
         } else {
             displayError('Could not initialize application. Error: ' + e);
         }
@@ -131,12 +154,10 @@
             if (err) {
                 console.error(err);
             }
-
             app.loadScene(SCENE_PATH, function (err, scene) {
                 if (err) {
                     console.error(err);
                 }
-
                 app.start();
             });
         });
