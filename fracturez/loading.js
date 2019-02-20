@@ -37,7 +37,6 @@ pc.script.createLoadingScreen(function (app) {
         var bar = document.getElementById('progress-bar');
         if (bar) {
             value = Math.min(1, Math.max(0, value));
-            if (FBState.initialized) FBInstant.setLoadingProgress(100 * value);
             bar.style.width = value * 100 + '%';
         }
     };
