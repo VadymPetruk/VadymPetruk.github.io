@@ -7,7 +7,6 @@
     ],
     "finishLevel": [
       4,
-      16,
       19,
       22
     ],
@@ -29,5 +28,7 @@
     11,
     15,
     19
-  ]
+  ],
+  "buildType": "BUILD_TYPE_PLACEHOLDER",
+  "buildVersion": "BUILD_VERSION_PLACEHOLDER"
 }
