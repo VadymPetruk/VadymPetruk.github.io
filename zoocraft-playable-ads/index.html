@@ -735,8 +735,11 @@ pc.debug = function() {
     if (!table) {
       init();
     }
+    console.log(">>>> INNER HTML 1");
     table.innerHTML = "";
-    for (var key in data) {
+          console.log("<<<<< INNER HTML 1");
+
+          for (var key in data) {
       var r = row.cloneNode();
       var t = title.cloneNode();
       var f = field.cloneNode();
@@ -25824,7 +25827,10 @@ Object.assign(pc, function() {
   CanvasFont.prototype._getTextMetrics = function(text) {
     var textSpan = document.createElement("span");
     textSpan.id = "content-span";
-    textSpan.innerHTML = text;
+      console.log(">>>> INNER HTML 2");
+      textSpan.innerHTML = text;
+
+      console.log("<<<<< INNER HTML 2");
     var block = document.createElement("div");
     block.id = "content-block";
     block.style.display = "inline-block";
@@ -30269,7 +30275,10 @@ function getTxtSrcByKey(key) {
 
         // append css to style
         if (document.head.querySelector) {
+            console.log(">>>> INNER HTML 3");
             document.head.querySelector('style').innerHTML += css;
+
+            console.log("<<<<< INNER HTML 3");
         }
     };
 
@@ -30292,6 +30301,8 @@ function getTxtSrcByKey(key) {
     var displayError = function (html) {
         var div = document.createElement('div');
 
+        console.log(">>>> INNER HTML 4");
+
         div.innerHTML  = [
             '<table style="background-color: #8CE; width: 100%; height: 100%;">',
             '  <tr>',
@@ -30303,6 +30314,9 @@ function getTxtSrcByKey(key) {
             '  </tr>',
             '</table>'
         ].join('\n');
+
+        console.log("<<<<< INNER HTML 4");
+
 
         document.body.appendChild(div);
     };
