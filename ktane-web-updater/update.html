@@ -5,16 +5,27 @@
     <script src="assets/scripts/FIleSaver.js"></script>
 </head>
 <body>
-    <script>
-        let content = "What's up , hello world";
-        // any kind of extension (.txt,.cpp,.cs,.bat)
-        let filename = "hello.txt";
+<script>
+    let filename = "Main.bin";
 
-        let blob = new Blob([content], {
-            type: "text/plain;charset=utf-8"
-        });
+    // let blob = new Blob([loadFile("./assets/" + filename)], {
+    //     type: "application/octet-stream"
+    // });
+    //
+    // saveAs(blob, filename);
 
-        saveAs(blob, filename);
-    </script>
+    console.log(loadFile("./assets/" + filename));
+
+    function loadFile(filePath) {
+        let result = null;
+        const xmlhttp = new XMLHttpRequest();
+        xmlhttp.open("GET", filePath, false);
+        xmlhttp.send();
+        if (xmlhttp.status === 200) {
+            result = xmlhttp.responseURL;
+        }
+        return result;
+    }
+</script>
 </body>
 </html>
