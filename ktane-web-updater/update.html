@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script src="assets/scripts/FIleSaver.js"></script>
+</head>
+<body>
+    <script>
+        let content = "What's up , hello world";
+        // any kind of extension (.txt,.cpp,.cs,.bat)
+        let filename = "hello.txt";
+
+        let blob = new Blob([content], {
+            type: "text/plain;charset=utf-8"
+        });
+
+        saveAs(blob, filename);
+    </script>
+</body>
+</html>
