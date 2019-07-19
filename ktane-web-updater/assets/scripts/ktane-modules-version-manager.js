@@ -10,7 +10,7 @@ function getLatestVersion(moduleId) {
 }
 
 function updateModule(moduleData) {
-    console.log("update module " + moduleData.name +" to version " + versionToString(moduleData.latestVersion));
+    console.log("update module " + moduleData.name + " to version " + versionToString(moduleData.latestVersion));
 }
 
 function versionToString(version) {
@@ -27,4 +27,15 @@ function isGreater(version1, version2) {
     }
 
     return false;
+}
+
+function getUpdateFileURL(moduleId, version) {
+    let filePath = './update_files/' + moduleId + '/' + moduleId + '_' + version + '.bin';
+
+    console.log(filePath);
+
+    const xmlHttp = new XMLHttpRequest();
+    xmlHttp.open("GET", filePath, false);
+    xmlHttp.send();
+    return (xmlHttp.status === 200) ? xmlHttp.responseURL : null;
 }
