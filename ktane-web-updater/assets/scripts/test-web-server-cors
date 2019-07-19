@@ -1,0 +1,2 @@
+  server.sendHeader("Access-Control-Allow-Origin", "*"); 
+  server.send(200, "text/plain", "hello from esp8266 pam-kar!");
