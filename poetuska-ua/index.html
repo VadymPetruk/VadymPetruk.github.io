@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Закодований текст</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f5f5f5;
+      color: #1f1f1f;
+    }
+    .page {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      width: 100%;
+      max-width: 720px;
+      background: #fff;
+      border: 1px solid #dcdcdc;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.06);
+    }
+    h1 {
+      margin: 0 0 16px;
+      font-size: 20px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .flag-ua {
+      display: inline-block;
+      width: 22px;
+      height: 14px;
+      border: 1px solid #cfcfcf;
+      border-radius: 2px;
+      background: linear-gradient(to bottom, #005BBB 0 50%, #FFD500 50% 100%);
+      vertical-align: middle;
+      flex-shrink: 0;
+    }
+    .field { margin-bottom: 16px; }
+    .field:last-child { margin-bottom: 0; }
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    textarea {
+      width: 100%;
+      resize: vertical;
+      border: 1px solid #cfcfcf;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 14px;
+      line-height: 1.4;
+      background: #fff;
+      color: #1f1f1f;
+    }
+    textarea[readonly] { background: #fafafa; }
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+    .copy-btn {
+      border: 1px solid #cfcfcf;
+      border-radius: 8px;
+      background: #fff;
+      color: #1f1f1f;
+      padding: 8px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .copy-btn:hover { background: #f7f7f7; }
+    .copy-btn:active { background: #efefef; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="card">
+      <h1>Поетуська <span class="flag-ua" aria-label="Прапор України" title="Україна"></span></h1>
+
+      <div class="field">
+        <label for="originalText">Оригінальний текст</label>
+        <textarea id="originalText" rows="4" placeholder="Введіть текст"></textarea>
+      </div>
+
+      <div class="field">
+        <label for="lettersText">Літери</label>
+        <textarea id="lettersText" rows="1" placeholder="Введіть літери"></textarea>
+      </div>
+
+      <div class="field">
+        <label for="encodedText">Закодований текст</label>
+        <textarea id="encodedText" rows="10" readonly></textarea>
+        <div class="actions">
+          <button id="copyButton" class="copy-btn" type="button">Скопіювати</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const originalField = document.getElementById('originalText');
+    const lettersField = document.getElementById('lettersText');
+    const encodedField = document.getElementById('encodedText');
+    const copyButton = document.getElementById('copyButton');
+
+    const MAX_ORIGINAL_LINES = 4;
+    const MAX_LETTERS_LINES = 1;
+    const NL = String.fromCharCode(10);
+    const CR = String.fromCharCode(13);
+
+    const STORAGE_KEYS = {
+      original: 'poetuska_original_text',
+      letters: 'poetuska_letters_text'
+    };
+
+    function normalizeNewlines(text) {
+      return String(text ?? '').replaceAll(CR + NL, NL).replaceAll(CR, NL);
+    }
+
+    function limitToMaxLines(text, maxLines) {
+      const normalized = normalizeNewlines(text);
+      const lines = normalized.split(NL);
+      return lines.slice(0, maxLines).join(NL);
+    }
+
+    function normalizeLettersInput(text) {
+      return limitToMaxLines(text, MAX_LETTERS_LINES).toUpperCase();
+    }
+
+    function isLetter(char) {
+      return char.toLowerCase() !== char.toUpperCase();
+    }
+
+    function createAllowedLettersSet(text) {
+      const set = new Set();
+      for (const char of normalizeLettersInput(text)) {
+        if (isLetter(char)) {
+          set.add(char);
+        }
+      }
+      return set;
+    }
+
+    function createOriginalLettersSet(text) {
+      const set = new Set();
+      for (const char of normalizeNewlines(text).toUpperCase()) {
+        if (isLetter(char)) {
+          set.add(char);
+        }
+      }
+      return set;
+    }
+
+    function getUniqueLettersFromInput(text) {
+      const result = [];
+      const seen = new Set();
+
+      for (const char of normalizeLettersInput(text)) {
+        if (!isLetter(char) || seen.has(char)) {
+          continue;
+        }
+
+        seen.add(char);
+        result.push(char);
+      }
+
+      return result;
+    }
+
+    function splitLettersByPresence(originalText, lettersText) {
+      const originalLettersSet = createOriginalLettersSet(originalText);
+      const inputLetters = getUniqueLettersFromInput(lettersText);
+      const present = [];
+      const absent = [];
+
+      for (const letter of inputLetters) {
+        if (originalLettersSet.has(letter)) {
+          present.push(letter);
+        } else {
+          absent.push(letter);
+        }
+      }
+
+      return { present, absent };
+    }
+
+    function encodeTextByAllowedLetters(text, allowedLettersText) {
+      const allowedSet = createAllowedLettersSet(allowedLettersText);
+      const source = normalizeNewlines(text);
+      let result = '';
+
+      for (const char of source) {
+        if (!isLetter(char)) {
+          result += char;
+          continue;
+        }
+
+        const upperChar = char.toUpperCase();
+        result += allowedSet.has(upperChar) ? char : '+';
+      }
+
+      return result;
+    }
+
+    function formatEncodedOutput(originalText, lettersText) {
+      const encodedMain = encodeTextByAllowedLetters(originalText, lettersText);
+      const { present, absent } = splitLettersByPresence(originalText, lettersText);
+      const statusLines = [];
+      const lines = [];
+
+      if (present.length > 0) {
+        statusLines.push('✅ ' + present.join(', '));
+      }
+
+      if (absent.length > 0) {
+        statusLines.push('❌ ' + absent.join(', '));
+      }
+
+      if (encodedMain !== '') {
+        lines.push(encodedMain);
+      }
+
+      if (statusLines.length > 0) {
+        if (encodedMain !== '') {
+          lines.push('');
+        }
+        lines.push(...statusLines);
+      }
+
+      if (lines.length > 0) {
+        lines.push('');
+      }
+
+      lines.push('#поетуська');
+
+      return lines.join(NL);
+    }
+
+    function saveToCache() {
+      try {
+        localStorage.setItem(STORAGE_KEYS.original, originalField.value);
+        localStorage.setItem(STORAGE_KEYS.letters, lettersField.value);
+      } catch (error) {
+        console.warn('Cannot write to localStorage', error);
+      }
+    }
+
+    function restoreFromCache() {
+      try {
+        const cachedOriginal = localStorage.getItem(STORAGE_KEYS.original);
+        const cachedLetters = localStorage.getItem(STORAGE_KEYS.letters);
+
+        if (cachedOriginal !== null) {
+          originalField.value = limitToMaxLines(cachedOriginal, MAX_ORIGINAL_LINES);
+        }
+
+        if (cachedLetters !== null) {
+          lettersField.value = normalizeLettersInput(cachedLetters);
+        }
+      } catch (error) {
+        console.warn('Cannot read from localStorage', error);
+      }
+    }
+
+    function handleInput(event) {
+      if (event.target === originalField) {
+        const limited = limitToMaxLines(originalField.value, MAX_ORIGINAL_LINES);
+        if (originalField.value !== limited) {
+          originalField.value = limited;
+        }
+      }
+
+      if (event.target === lettersField) {
+        const normalizedLetters = normalizeLettersInput(lettersField.value);
+        if (lettersField.value !== normalizedLetters) {
+          lettersField.value = normalizedLetters;
+        }
+      }
+
+      saveToCache();
+      updateEncodedText();
+    }
+
+    function updateEncodedText() {
+      encodedField.value = formatEncodedOutput(originalField.value, lettersField.value);
+    }
+
+    function fallbackCopyText(text) {
+      const temp = document.createElement('textarea');
+      temp.value = text;
+      temp.setAttribute('readonly', '');
+      temp.style.position = 'fixed';
+      temp.style.opacity = '0';
+      temp.style.pointerEvents = 'none';
+      document.body.appendChild(temp);
+      temp.select();
+      temp.setSelectionRange(0, temp.value.length);
+
+      const ok = document.execCommand('copy');
+      document.body.removeChild(temp);
+
+      if (!ok) {
+        throw new Error('Copy command failed');
+      }
+    }
+
+    async function copyEncodedText() {
+      const textToCopy = encodedField.value;
+
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(textToCopy);
+        } else {
+          fallbackCopyText(textToCopy);
+        }
+
+        copyButton.textContent = 'Скопійовано';
+        clearTimeout(copyButton._resetTimer);
+        copyButton._resetTimer = setTimeout(() => {
+          copyButton.textContent = 'Скопіювати';
+        }, 1200);
+      } catch (error) {
+        console.warn('Copy failed', error);
+        copyButton.textContent = 'Помилка';
+        clearTimeout(copyButton._resetTimer);
+        copyButton._resetTimer = setTimeout(() => {
+          copyButton.textContent = 'Скопіювати';
+        }, 1200);
+      }
+    }
+
+    function runTests() {
+      const multiLineAB = ['Аа', 'Бб'].join(NL);
+      const multiLineNums = ['1', '2', '3', '4', '5'].join(NL);
+      const normalizedSource = 'a' + CR + NL + 'b' + CR + 'c';
+      const expectedNormalized = ['a', 'b', 'c'].join(NL);
+      const lettersInputWithLineBreak = 'абc' + NL + 'xyz';
+
+      const tests = [
+        {
+          name: 'Маскує літери, яких немає у списку',
+          actual: encodeTextByAllowedLetters('Привіт, world!', 'ОВІ'),
+          expected: '+++ві+, +++++!'
+        },
+        {
+          name: 'Ігнорує регістр у списку літер',
+          actual: encodeTextByAllowedLetters('АбБа', 'б'),
+          expected: '+бБ+'
+        },
+        {
+          name: 'Зберігає переноси рядків',
+          actual: encodeTextByAllowedLetters(multiLineAB, 'а'),
+          expected: ['Аа', '++'].join(NL)
+        },
+        {
+          name: 'Обмеження до 4 рядків',
+          actual: limitToMaxLines(multiLineNums, 4),
+          expected: ['1', '2', '3', '4'].join(NL)
+        },
+        {
+          name: 'Обмеження до 1 рядка',
+          actual: limitToMaxLines(['abc', 'def'].join(NL), 1),
+          expected: 'abc'
+        },
+        {
+          name: 'Нормалізація CRLF/CR',
+          actual: normalizeNewlines(normalizedSource),
+          expected: expectedNormalized
+        },
+        {
+          name: 'Цифри не маскуються',
+          actual: encodeTextByAllowedLetters('A1-Б2', ''),
+          expected: '+1-+2'
+        },
+        {
+          name: 'Поле Літери автоматично у верхній регістр',
+          actual: normalizeLettersInput(lettersInputWithLineBreak),
+          expected: 'АБC'
+        },
+        {
+          name: 'Літери з набору зберігають оригінальний регістр у тексті',
+          actual: encodeTextByAllowedLetters('aAбБ', 'аб'),
+          expected: '++бБ'
+        },
+        {
+          name: 'Порожній список літер маскує всі літери',
+          actual: encodeTextByAllowedLetters('Тест 123!', ''),
+          expected: '++++ 123!'
+        },
+        {
+          name: 'Схожі літери різних абеток не прирівнюються',
+          actual: encodeTextByAllowedLetters('OО', 'О'),
+          expected: '+О'
+        },
+        {
+          name: 'Нелітерні символи в полі Літери ігноруються',
+          actual: encodeTextByAllowedLetters('А-Б', ' - б '),
+          expected: '+-Б'
+        },
+        {
+          name: 'Списки ✅ і ❌ формуються у порядку введення без дублікатів',
+          actual: JSON.stringify(splitLettersByPresence('Привіт', 'вівхв')),
+          expected: JSON.stringify({ present: ['В', 'І'], absent: ['Х'] })
+        },
+        {
+          name: 'Фінальний текст містить порожній рядок після основного і перед хештегом',
+          actual: formatEncodedOutput('Привіт', 'ВІХ'),
+          expected: ['+++ві+', '', '✅ В, І', '❌ Х', '', '#поетуська'].join(NL)
+        },
+        {
+          name: 'Якщо оригінальний текст порожній, показується ❌ і порожній рядок перед хештегом',
+          actual: formatEncodedOutput('', 'АБ'),
+          expected: ['❌ А, Б', '', '#поетуська'].join(NL)
+        },
+        {
+          name: 'Без ✅ і ❌ хештег відділяється порожнім рядком',
+          actual: formatEncodedOutput('123', ''),
+          expected: ['123', '', '#поетуська'].join(NL)
+        }
+      ];
+
+      for (const test of tests) {
+        if (test.actual !== test.expected) {
+          throw new Error('Test failed: ' + test.name + ' | actual="' + test.actual + '" expected="' + test.expected + '"');
+        }
+      }
+    }
+
+    originalField.addEventListener('input', handleInput);
+    lettersField.addEventListener('input', handleInput);
+    copyButton.addEventListener('click', copyEncodedText);
+
+    runTests();
+    restoreFromCache();
+    saveToCache();
+    updateEncodedText();
+  </script>
+</body>
+</html>
