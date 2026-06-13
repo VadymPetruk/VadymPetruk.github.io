@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Дзвін</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { background: #09040a; overflow: hidden; height: 100%; width: 100%; }
+body { height: 100dvh; } /* dynamic viewport height – excludes mobile browser chrome */
+canvas {
+  display: block; cursor: grab;
+  user-select: none; -webkit-user-select: none;
+  touch-action: none; /* prevent scroll/zoom while interacting */
+  -webkit-tap-highlight-color: transparent;
+}
+canvas.grabbing { cursor: grabbing; }
+#hint {
+  position: fixed;
+  bottom: max(22px, env(safe-area-inset-bottom, 22px)); /* notch/home-bar safe area */
+  left: 50%; transform: translateX(-50%);
+  color: rgba(255, 210, 70, 0.55); font: italic 15px 'Georgia', serif;
+  pointer-events: none; text-align: center; letter-spacing: 0.06em;
+  transition: opacity 1.4s; white-space: nowrap;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Тягніть за мотузку вниз, щоб подзвонити в дзвін</div>
+<script>
+'use strict';
+
+// ── Canvas ──────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+let W, H, DPR, SC; // SC = scene scale factor for responsive sizing
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  DPR = Math.min(window.devicePixelRatio || 1, 2); // cap at 2× for perf
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); // scale all draws by DPR
+
+  // Responsive scene scale: 1.0 on ≥700px wide, scales down to 0.5 on narrow screens
+  SC = Math.min(1.0, Math.max(0.5, Math.min(W / 700, H / 750)));
+}
+resize();
+window.addEventListener('resize', () => { resize(); initScene(); });
+
+// ── Audio ────────────────────────────────────────────────────────────────────
+let AC = null, compressor = null;
+
+function ensureAC() {
+  if (!AC) {
+    AC = new (window.AudioContext || window.webkitAudioContext)();
+    // Shared compressor prevents clipping when rings overlap
+    compressor = AC.createDynamicsCompressor();
+    compressor.threshold.value = -14;
+    compressor.knee.value      =   8;
+    compressor.ratio.value     =   4;
+    compressor.attack.value    = 0.003;
+    compressor.release.value   = 0.3;
+    compressor.connect(AC.destination);
+  }
+  if (AC.state === 'suspended') AC.resume();
+}
+
+// Bell partials: frequency ratio, amplitude, decay seconds
+const PARTIALS = [
+  [1.000, 1.00, 7.0],
+  [2.756, 0.55, 5.0],
+  [5.404, 0.32, 3.2],
+  [8.933, 0.18, 2.0],
+  [13.34, 0.10, 1.2],
+  [18.64, 0.05, 0.7],
+];
+const BASE_HZ  = 220;
+const LOOKAHEAD = 0.015; // schedule this far ahead to stay out of the past
+let lastRing = 0;
+
+function ringBell(strength) {
+  ensureAC();
+  const now = AC.currentTime;
+  if (now - lastRing < 0.12) return; // debounce
+  lastRing = now;
+
+  const t   = now + LOOKAHEAD; // safe scheduling time
+  const vol = Math.min(strength, 0.85); // leave headroom for compressor
+
+  const master = AC.createGain();
+  // Ramp from silence — 15 ms attack avoids the click a hard onset creates
+  master.gain.setValueAtTime(0, t);
+  master.gain.linearRampToValueAtTime(vol, t + 0.015);
+  master.connect(compressor);
+
+  PARTIALS.forEach(([r, a, d]) => {
+    const osc = AC.createOscillator(), g = AC.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = BASE_HZ * r;
+    g.gain.setValueAtTime(a, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    osc.connect(g); g.connect(master);
+    osc.start(t); osc.stop(t + d + 0.05);
+  });
+
+  spawnParticles(
+    pivot.x + Math.sin(bell.angle) * 100 * SC,
+    pivot.y + Math.cos(bell.angle) * 100 * SC,
+    vol
+  );
+}
+
+// ── Bell pivot & state ────────────────────────────────────────────────────────
+// The bell rotates around `pivot`. Bell body hangs below pivot.
+const pivot   = { x: 0, y: 0 }; // world pivot point (top of yoke)
+const bell    = {
+  angle:    0,   // radians from vertical (positive = right)
+  angVel:   0,
+  angDamp:  0.994,
+  gravK:    0.003,     // pendulum restoring force
+  lastSide: 0,
+};
+const CLAP_ANGLE = 0.20; // rad – clapper hits bell rim
+
+// Clapper state (lags behind bell)
+const clapper = { angle: 0, angVel: 0, damp: 0.92 };
+
+// ── Rope ──────────────────────────────────────────────────────────────────────
+const N       = 24;    // segment count (fixed)
+const GRAVITY = 0.42;
+const DAMP    = 0.97;
+
+let pts = [];
+
+function initScene() {
+  pivot.x = W / 2;
+  pivot.y = H * 0.18;
+
+  const seg = 13 * SC;
+  const ax = pivot.x, ay = pivot.y + 168 * SC;
+  pts = [];
+  for (let i = 0; i <= N; i++) {
+    pts.push({ x: ax, y: ay + i * seg, px: ax, py: ay + i * seg });
+  }
+}
+initScene();
+
+// Current segment rest length (SC may change on resize)
+function segLen() { return 13 * SC; }
+
+// World position of rope attachment — centre bottom of bell, rotates with bell
+function ropeAttach() {
+  const dist = 168 * SC;
+  return {
+    x: pivot.x + Math.sin(bell.angle) * dist,
+    y: pivot.y + Math.cos(bell.angle) * dist,
+  };
+}
+
+// ── Interaction ───────────────────────────────────────────────────────────────
+const mouse = { x: 0, y: 0, down: false };
+let grabbed = null;
+const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+// Larger grab zone on touch devices
+function grabRadius() { return isTouchDevice ? 55 : 40; }
+
+function tryGrab(mx, my) {
+  const r2 = grabRadius() ** 2;
+  // Allow grabbing the lower 2/3 of the rope
+  const minIdx = Math.floor(N / 3);
+  for (let i = N; i >= minIdx; i--) {
+    const p = pts[i];
+    if ((p.x-mx)**2 + (p.y-my)**2 < r2) { grabbed = p; return; }
+  }
+}
+
+function pointerDown(x, y) { mouse.x=x; mouse.y=y; mouse.down=true; ensureAC(); tryGrab(x,y); if(grabbed) canvas.classList.add('grabbing'); fadeHint(); }
+function pointerMove(x, y) { mouse.x=x; mouse.y=y; }
+function pointerUp()        { mouse.down=false; grabbed=null; canvas.classList.remove('grabbing'); }
+
+canvas.addEventListener('mousedown',  e => pointerDown(e.clientX, e.clientY));
+canvas.addEventListener('mousemove',  e => pointerMove(e.clientX, e.clientY));
+canvas.addEventListener('mouseup',    pointerUp);
+canvas.addEventListener('mouseleave', pointerUp);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); pointerDown(e.touches[0].clientX, e.touches[0].clientY); }, {passive:false});
+canvas.addEventListener('touchmove',  e => { e.preventDefault(); pointerMove(e.touches[0].clientX, e.touches[0].clientY); }, {passive:false});
+canvas.addEventListener('touchend',   pointerUp);
+
+let hintShown = true;
+function fadeHint() { if(!hintShown) return; hintShown=false; document.getElementById('hint').style.opacity='0'; }
+
+// ── Particles ─────────────────────────────────────────────────────────────────
+const parts = [];
+function spawnParticles(x, y, s) {
+  for (let i = 0; i < s * 22 + 4; i++) {
+    const a = Math.random()*Math.PI*2, sp = (Math.random()*2+1)*s*4;
+    parts.push({ x, y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-1.5, life:1, sz:Math.random()*3+1, hue:40+Math.random()*25 });
+  }
+}
+
+// ── Physics ───────────────────────────────────────────────────────────────────
+function physicsStep() {
+  const attach = ropeAttach();
+
+  // --- Rope Verlet ---
+  pts[0].x = attach.x; pts[0].y = attach.y; // pin top
+
+  for (let i = 1; i <= N; i++) {
+    const p = pts[i];
+    const vx = (p.x - p.px) * DAMP, vy = (p.y - p.py) * DAMP;
+    p.px = p.x; p.py = p.y;
+    p.x += vx; p.y += vy + GRAVITY;
+  }
+
+  // Constrain + grab
+  const SL = segLen();
+  for (let iter = 0; iter < 14; iter++) {
+    if (grabbed && mouse.down) { grabbed.x = mouse.x; grabbed.y = mouse.y; }
+    for (let i = 0; i < N; i++) {
+      const a = pts[i], b = pts[i+1];
+      const dx = b.x-a.x, dy = b.y-a.y;
+      const d = Math.sqrt(dx*dx+dy*dy) || 1e-6;
+      const f = (d-SL)/d;
+      if (i === 0) { b.x -= dx*f; b.y -= dy*f; }
+      else         { a.x += dx*f*0.5; a.y += dy*f*0.5; b.x -= dx*f*0.5; b.y -= dy*f*0.5; }
+    }
+    pts[0].x = attach.x; pts[0].y = attach.y;
+  }
+
+  // --- Torque on bell from rope tension ---
+  const rx = attach.x - pivot.x;
+  const ry = attach.y - pivot.y;
+  const t1x = pts[1].x - attach.x;
+  const t1y = pts[1].y - attach.y;
+  const tlen = Math.sqrt(t1x*t1x+t1y*t1y) || 1;
+  const tx = t1x/tlen, ty = t1y/tlen;
+  // Screen coords: y-down, clockwise = positive angle → τ = ry·tx − rx·ty
+  const torque = (ry*tx - rx*ty) * (0.00009 / SC);
+
+  bell.angVel += torque;
+  bell.angVel -= Math.sin(bell.angle) * bell.gravK; // gravity restoring
+  bell.angVel *= bell.angDamp;
+  // Clamp to prevent spinning
+  bell.angVel = Math.max(-0.09, Math.min(0.09, bell.angVel));
+  bell.angle  += bell.angVel;
+  bell.angle  = Math.max(-0.6, Math.min(0.6, bell.angle)); // hard stop at ~34°
+
+  // --- Clapper ---
+  // Clapper swings opposite to bell acceleration
+  clapper.angVel += (-bell.angVel * 0.7 - clapper.angle * 0.05);
+  clapper.angVel *= clapper.damp;
+  clapper.angle  += clapper.angVel;
+  clapper.angle   = Math.max(-0.5, Math.min(0.5, clapper.angle));
+
+  // --- Ring detection: clapper reaches bell rim ---
+  const side = Math.sign(clapper.angle - bell.angle);
+  if (Math.abs(clapper.angle - bell.angle) >= CLAP_ANGLE && side !== bell.lastSide) {
+    bell.lastSide = side;
+    const intensity = Math.min(Math.abs(bell.angVel) * 40, 1.0);
+    if (intensity > 0.03) ringBell(intensity);
+  }
+  if (Math.abs(clapper.angle - bell.angle) < CLAP_ANGLE * 0.4) bell.lastSide = 0;
+
+  // Particles
+  for (let i = parts.length-1; i >= 0; i--) {
+    const p = parts[i];
+    p.x+=p.vx; p.y+=p.vy; p.vy+=0.09; p.vx*=0.98; p.life-=0.02;
+    if (p.life<=0) parts.splice(i,1);
+  }
+}
+
+// ── Drawing ───────────────────────────────────────────────────────────────────
+let glowStr = 0;
+
+function drawBg() {
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#050203'); g.addColorStop(1,'#0f0608');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+  // Subtle stone joints
+  ctx.strokeStyle = 'rgba(255,200,100,0.04)'; ctx.lineWidth = 1;
+  for (let y=60; y<H; y+=44) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+  for (let x=0; x<W; x+=66)  { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+}
+
+function drawBeam() {
+  const bx = pivot.x, by = pivot.y;
+
+  // Vertical wooden supports (from ceiling to just above beam)
+  const beamTop = by - 18;
+  ctx.save();
+
+  // Wood grain rods
+  const rodOff = 32 * SC;
+  [bx-rodOff, bx+rodOff].forEach(sx => {
+    const rw = Math.max(6, 6 * SC);
+    const rg = ctx.createLinearGradient(sx-rw,0,sx+rw,0);
+    rg.addColorStop(0,'#2e1504'); rg.addColorStop(0.4,'#7a4010'); rg.addColorStop(1,'#2e1504');
+    ctx.fillStyle = rg;
+    ctx.fillRect(sx-rw, 0, rw*2, beamTop+18);
+  });
+
+  // Horizontal beam
+  const bw = 120 * SC;
+  const bg = ctx.createLinearGradient(bx-bw, beamTop, bx-bw, beamTop+20);
+  bg.addColorStop(0,'#8B5218'); bg.addColorStop(0.5,'#A06828'); bg.addColorStop(1,'#4a2808');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.roundRect(bx-bw, beamTop, bw*2, 20, 3); ctx.fill();
+
+  // Beam edge highlight
+  ctx.strokeStyle = '#C08030'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(bx-bw+5, beamTop+19); ctx.lineTo(bx+bw-5, beamTop+19); ctx.stroke();
+
+  // Pivot pin
+  const pg = ctx.createRadialGradient(bx-3,by-3,1,bx,by,12);
+  pg.addColorStop(0,'#ccc'); pg.addColorStop(1,'#444');
+  ctx.fillStyle = pg;
+  ctx.beginPath(); ctx.arc(bx, by, 12, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#aaa'; ctx.lineWidth = 1.5; ctx.stroke();
+
+  ctx.restore();
+}
+
+// Draw bell body in local coords (pivot at origin, bell hangs downward)
+function drawBellLocal() {
+  const S = 2.2 * SC; // responsive bell scale
+  ctx.save();
+  ctx.scale(S, S);
+
+  const bellH = 78; // local half-height of bell
+
+  // ── Yoke / crown ──
+  const yk = ctx.createLinearGradient(-35,-5,35,5);
+  yk.addColorStop(0,'#7a6010'); yk.addColorStop(0.5,'#D4A820'); yk.addColorStop(1,'#7a6010');
+  ctx.strokeStyle = yk; ctx.lineWidth = 8; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-30,-2); ctx.quadraticCurveTo(0,-16,30,-2); ctx.stroke();
+
+  // Arms
+  ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(-18,-8); ctx.lineTo(-18,5); ctx.moveTo(18,-8); ctx.lineTo(18,5); ctx.stroke();
+
+  // ── Bell body path ──
+  // Classic bell: narrow neck, curved shoulders, flared soundbow
+  const bodGrad = ctx.createLinearGradient(-70,0,70,bellH);
+  bodGrad.addColorStop(0,   '#F0CC40');
+  bodGrad.addColorStop(0.25,'#D8A818');
+  bodGrad.addColorStop(0.65,'#C09010');
+  bodGrad.addColorStop(1,   '#846008');
+
+  ctx.fillStyle = bodGrad;
+  ctx.beginPath();
+  ctx.moveTo(-8, 5);
+  // Left: stays narrow near top, then bellows out at bottom
+  ctx.bezierCurveTo(-9, 18, -16, 38, -60, bellH);
+  // Rim arc
+  ctx.bezierCurveTo(-44, bellH+14, 44, bellH+14, 60, bellH);
+  // Right (mirror)
+  ctx.bezierCurveTo(16, 38, 9, 18, 8, 5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 2; ctx.stroke();
+
+  // ── Rim ──
+  const rimG = ctx.createLinearGradient(-60, bellH, 60, bellH+16);
+  rimG.addColorStop(0,'#906008'); rimG.addColorStop(0.5,'#F4D040'); rimG.addColorStop(1,'#906008');
+  ctx.fillStyle = rimG;
+  ctx.beginPath(); ctx.ellipse(0, bellH+2, 61, 13, 0, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+  // ── Highlight ──
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(-6, 8);
+  ctx.bezierCurveTo(-7, 22, -13, 42, -20, 65);
+  ctx.bezierCurveTo(-11, 62, -4, 35, -3, 6);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255,248,170,0.28)'; ctx.fill();
+  ctx.restore();
+
+  // ── Decorative engravings ──
+  ctx.strokeStyle = 'rgba(80,55,0,0.4)'; ctx.lineWidth = 1;
+  [{y:22,w:14},{y:44,w:38},{y:65,w:57}].forEach(({y,w}) => {
+    ctx.beginPath(); ctx.ellipse(0,y,w,3.5,0,0,Math.PI*2); ctx.stroke();
+  });
+
+  // ── Clapper ──
+  ctx.save();
+  ctx.translate(0, 22);
+  // clapper swings in its own local space
+  ctx.rotate(clapper.angle - bell.angle); // relative to bell
+  const cg = ctx.createLinearGradient(-3,0,3,42);
+  cg.addColorStop(0,'#666'); cg.addColorStop(1,'#2a2a2a');
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.roundRect(-3,2,6,38,2); ctx.fill();
+  const bg2 = ctx.createRadialGradient(-2,38,1,0,44,9);
+  bg2.addColorStop(0,'#777'); bg2.addColorStop(1,'#1a1a1a');
+  ctx.fillStyle = bg2;
+  ctx.beginPath(); ctx.arc(0,46,9,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  ctx.restore(); // undo scale
+}
+
+function drawBell() {
+  ctx.save();
+  ctx.translate(pivot.x, pivot.y);
+  ctx.rotate(bell.angle);
+  drawBellLocal();
+  ctx.restore();
+}
+
+function drawRope() {
+  if (pts.length < 2) return;
+  ctx.save();
+
+  const rw = Math.max(4, 6 * SC);
+  const sh = Math.max(1, 2 * SC);
+
+  // Shadow
+  ctx.strokeStyle='rgba(0,0,0,0.25)'; ctx.lineWidth=rw+2; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.beginPath(); ctx.moveTo(pts[0].x+sh,pts[0].y+sh);
+  for(let i=1;i<=N;i++) ctx.lineTo(pts[i].x+sh,pts[i].y+sh);
+  ctx.stroke();
+
+  // Main rope
+  ctx.strokeStyle='#A07840'; ctx.lineWidth=rw;
+  ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y);
+  for(let i=1;i<=N;i++) ctx.lineTo(pts[i].x,pts[i].y);
+  ctx.stroke();
+
+  // Lighter strand
+  ctx.strokeStyle='rgba(230,190,110,0.45)'; ctx.lineWidth=Math.max(1.5, 2*SC);
+  ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y);
+  for(let i=1;i<=N;i++) ctx.lineTo(pts[i].x,pts[i].y);
+  ctx.stroke();
+
+  // Knot marks
+  const kr = Math.max(2.5, 3.5 * SC);
+  [5,10,15,20].forEach(i => {
+    ctx.fillStyle='#6B4820';
+    ctx.beginPath(); ctx.arc(pts[i].x,pts[i].y,kr,0,Math.PI*2); ctx.fill();
+  });
+
+  // Handle — larger on touch devices for easier grab
+  const hr = isTouchDevice ? Math.max(18, 20 * SC) : Math.max(12, 15 * SC);
+  const last = pts[N];
+  const hg = ctx.createRadialGradient(last.x-4,last.y-4,1,last.x,last.y,hr+4);
+  hg.addColorStop(0,'#8B5520'); hg.addColorStop(1,'#3a1a05');
+  ctx.fillStyle=hg;
+  ctx.beginPath(); ctx.arc(last.x,last.y,hr,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#C07030'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle='rgba(220,150,60,0.3)';
+  ctx.beginPath(); ctx.arc(last.x-hr*0.3,last.y-hr*0.3,hr*0.45,0,Math.PI*2); ctx.fill();
+
+  ctx.restore();
+}
+
+function drawGlow() {
+  const speed = Math.abs(bell.angVel);
+  glowStr += (speed * 60 - glowStr) * 0.1;
+  if (glowStr < 0.01) return;
+
+  const gr = 130 * SC;
+  const bx = pivot.x + Math.sin(bell.angle) * 90 * SC;
+  const by = pivot.y + Math.cos(bell.angle) * 90 * SC;
+  const alpha = Math.min(glowStr * 0.5, 0.55);
+  const grd = ctx.createRadialGradient(bx,by,5,bx,by,gr);
+  grd.addColorStop(0,`rgba(255,200,40,${alpha})`);
+  grd.addColorStop(1,'rgba(255,180,20,0)');
+  ctx.fillStyle=grd;
+  ctx.beginPath(); ctx.ellipse(bx,by,gr,gr*0.7,bell.angle,0,Math.PI*2); ctx.fill();
+}
+
+function drawParticles() {
+  for (const p of parts) {
+    ctx.save();
+    ctx.globalAlpha = p.life * p.life;
+    ctx.fillStyle = `hsl(${p.hue},88%,62%)`;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.sz*p.life,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ── Loop ──────────────────────────────────────────────────────────────────────
+let lastT = 0;
+function loop(t) {
+  const dt = Math.min((t - lastT) / 16.67, 3);
+  lastT = t;
+
+  ctx.clearRect(0,0,W,H);
+  drawBg();
+  drawBeam();
+  drawGlow();
+
+  const steps = 3;
+  for (let s = 0; s < steps; s++) physicsStep();
+
+  drawParticles();
+  drawRope();
+  drawBell();
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
